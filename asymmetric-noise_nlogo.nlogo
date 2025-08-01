@@ -5,6 +5,7 @@ globals [upper-end lower-end]
 turtles-own [opinion identity ]
 
 to setup
+  random-seed seed
   clear-all
   set lower-end -1
   set upper-end 1
@@ -12,46 +13,137 @@ to setup
 
   file-close-all
 
-  ;; CREATE AGENTS FROM FILE
-  let fname ( word "datasets/ess11_austria_imueclt_n200_seed" seed ".csv" )
-  file-open fname ; open the file with the turtle data
-  let n 0
-  ; We'll read all the data in a single loop
-  while [ not file-at-end? ] [
-  ; here the CSV extension grabs a single line and puts the read data in a list
-  let data csv:from-row file-read-line
-  if (n != 0)[
-    ; now we can use that list to create a turtle with the saved properties
-      create-turtles 1 [
-        set opinion (item 0 data) - 1 / n-bins + ( upper-end - lower-end ) / n-bins * (random-float 1)
-        ;;set opinion read-from-string opinion
-        set identity  item 2 data
-        set shape ifelse-value( identity = "left") [ "circle" ][ifelse-value( identity = "middle left") ["circle 2"][ifelse-value( identity = "none") ["x"] [ifelse-value( identity = "middle right") ["square 2"] [ ifelse-value( identity = "right") ["square"]["line"] ]]]]
-        ;;set weight item 3 data
-        set size 1
-        move-to one-of patches
+  if-else ( create-random-agents ) [
+    create-turtles 100 [
+      set opinion min list 1 ( max list -1 random-normal group-A-initial-mean group-A-std )
+          set identity  "left"
+          set shape "circle"
+          set size 1
+          move-to one-of patches
+        ]
+    create-turtles 100 [
+      set opinion  min list 1 ( max list -1 random-normal group-B-initial-mean group-B-std )
+          set identity "right"
+          set shape "square"
+          set size 1
+          ;;move-to one-of patches
+       ]
+  ]  [
+    let fname ( word "datasets/ess11_austria_imueclt_n200_seed" seed ".csv" )
+    file-open fname ; open the file with the turtle data
+    let n 0
+    ; We'll read all the data in a single loop
+    while [ not file-at-end? ] [
+      ; here the CSV extension grabs a single line and puts the read data in a list
+      let data csv:from-row file-read-line
+      if (n != 0)[
+        ; now we can use that list to create a turtle with the saved properties
+        create-turtles 1 [
+          set opinion (item 0 data) - 1 / n-bins + ( upper-end - lower-end ) / n-bins * (random-float 1)
+          ;;set opinion read-from-string opinion
+          set identity  item 2 data
+          set shape ifelse-value( identity = "left") [ "circle" ][ifelse-value( identity = "middle left") ["star"][ifelse-value( identity = "none") ["x"] [ifelse-value( identity = "middle right") ["triangle"] [ ifelse-value( identity = "right") ["square"]["line"] ]]]]
+          set size 1
+          ;;move-to one-of patches
+        ]
       ]
+      set n n + 1
     ]
-    set n n + 1
   ]
 
-  ;; CREATE AGENTS BY HAND
-  ;;let n 0
-  ;;ask patches[
-  ;;  sprout 1 [
-  ;;    set identity 0
-  ;;    ;;set opinion (random-float ( upper-end - lower-end ) ) + lower-end  ;;give each agent an opinion drawn from [-1, 1]
-  ;;    ;;set opinion -999
-  ;;    ;;while [ opinion < lower-end or opinion > upper-end ]
-  ;;    ;;[ set opinion random-normal (ifelse-value (identity = 0) [group-0-initial-mean] [group-1-initial-mean] ) group-initial-var ] ;;give each agent an opinion drawn from [-1, 1]
-  ;;  ]
-  ;;]
-
+  ;; CREATE NETWORK
+  setup-caveman-network-by-identity
+  maslov-sneppen-rewire ( 1 - homophily )
+  layout-nodes
 
   update-colors ;;color represents opinion
   reset-ticks
 
 end
+
+
+to setup-caveman-network-by-identity
+  let identity-groups remove-duplicates [identity] of turtles
+  let group-turtles []
+
+  ;; ids of agents in each group
+  foreach identity-groups [ id ->
+    set group-turtles lput (turtles with [identity = id]) group-turtles
+  ]
+
+  ;; Fully connect agents within each group ( = cave)
+  foreach group-turtles [ group ->
+    ask group [
+      ask other group [
+        if not link-neighbor? myself [
+          create-link-with myself
+        ]
+      ]
+    ]
+  ]
+
+end
+
+
+to maslov-sneppen-rewire [h]
+  let all-links links
+  let n-rewires count all-links
+
+  repeat n-rewires [
+    if (random-float 1 < h) [
+      let edge1 one-of all-links
+      let edge2 one-of all-links
+      if (edge1 != edge2) [
+        let a1 [end1] of edge1
+        let b1 [end2] of edge1
+        let a2 [end1] of edge2
+        let b2 [end2] of edge2
+
+        if (a1 != b2 and a2 != b1 and
+            not link-exists? a1 b2 and
+            not link-exists? a2 b1 and
+            a1 != b1 and a2 != b2 and
+            a1 != a2 and b1 != b2) [
+          ask edge1 [ die ]
+          ask edge2 [ die ]
+          ask a1 [ create-link-with b2 ]
+          ask a2 [ create-link-with b1 ]
+        ]
+      ]
+    ]
+  ]
+end
+
+to layout-nodes
+  let n count turtles
+  let radius 17  ;; adjust this to make the circle bigger or smaller
+
+  ask turtles [
+    let angle (who * 360 / n)
+    let r radius + min list 1.9 random-normal 0 2  ;; radius with some noise
+    let x r * cos angle
+    let y r * sin angle
+    setxy x y
+    set heading angle
+  ]
+
+  ask links [
+    if-else (random-float 1.0) < 0.10 [
+      show-link
+    ] [
+      hide-link
+    ]
+  ]
+end
+
+
+
+
+to-report link-exists? [a b]
+  report a != b and member? b [link-neighbors] of a
+end
+
+
 
 
 to go
@@ -60,53 +152,38 @@ to go
     let x1 opinion ;;my opinion
     ;;let other-turtle one-of other turtles ;;choose interaction partner at random
     ;;let within-group ( identity = [identity] of other-turtle ) ;; True if turtle and other-turtle have same identity.
-    let receiver false
-    let within-group false
+    let receiver one-of link-neighbors
+    if receiver != nobody [
 
-    while [not is-turtle? receiver]
-    [
-      let potential-receiver one-of other turtles
-      set within-group ( identity = [identity] of potential-receiver  )
-      let p-communicate ifelse-value( within-group ) [1] [1 - homophily]
-      if (random-float 1 < p-communicate) [set receiver potential-receiver]
+      let within-group  ( identity = [identity] of receiver  )
+
+      let x2 [opinion] of receiver  ;;other guy's opinion
+
+      ;; Noise
+      let current-sigma-ambiguity ifelse-value (identity-dependent-noise) [ifelse-value( within-group ) [sigma-ambiguity-within-group] [sigma-ambiguity]] [sigma-ambiguity]
+      let current-sigma-adaptation ifelse-value (identity-dependent-noise) [ifelse-value( within-group ) [sigma-adaptation-within-group] [sigma-adaptation]] [sigma-adaptation]
+      let current-sigma-selectivity ifelse-value (identity-dependent-noise) [ifelse-value( within-group ) [sigma-selectivity-within-group] [sigma-selectivity]] [sigma-selectivity]
+
+      ;; message
+      let m1 -999
+      while [m1 > upper-end or m1 < lower-end]
+      [ set m1 x1 + random-normal 0 current-sigma-ambiguity   ]  ;; add ambiguity until m1 within bounds
+
+      ;; SELECTION
+      let successful-interaction 0
+      if (abs (x2 - m1) < confidence-bound + random-normal 0 current-sigma-selectivity) [
+        set successful-interaction 1
+      ]
+
+      if (successful-interaction != 0) [
+        ;; change receiver's opinion
+        let x2-new-mean (x2 + successful-interaction * learning-rate * (m1 - x2))
+        let x2-new -999
+        while [x2-new > upper-end  or x2-new < lower-end]
+        [ set x2-new x2-new-mean + random-normal 0 current-sigma-adaptation ]
+        ask receiver [ set opinion x2-new]
+      ]
     ]
-      ;;choose interaction partner at random]
-    let x2 [opinion] of receiver  ;;other guy's opinion
-
-    ;; Noise
-    let current-sigma-ambiguity ifelse-value (identity-dependent-noise) [ifelse-value( within-group ) [sigma-ambiguity-within-group] [sigma-ambiguity]] [sigma-ambiguity]
-    let current-sigma-adaptation ifelse-value (identity-dependent-noise) [ifelse-value( within-group ) [sigma-adaptation-within-group] [sigma-adaptation]] [sigma-adaptation]
-    let current-sigma-selectivity ifelse-value (identity-dependent-noise) [ifelse-value( within-group ) [sigma-selectivity-within-group] [sigma-selectivity]] [sigma-selectivity]
-
-    ;; message
-    let m1 -999
-    while [m1 > upper-end or m1 < lower-end]
-    [ set m1 x1 + random-normal 0 current-sigma-ambiguity   ]  ;; add ambiguity until m1 within bounds
-
-    ;; SELECTION
-    let successful-interaction 0
-    if (abs (x2 - m1) < confidence-bound + random-normal 0 current-sigma-selectivity) [
-      set successful-interaction 1
-    ]
-
-    if (successful-interaction != 0) [
-      ;; change receiver's opinion
-      let x2-new-mean (x2 + successful-interaction * learning-rate * (m1 - x2))
-      let x2-new -999
-      while [x2-new > upper-end  or x2-new < lower-end]
-      [ set x2-new x2-new-mean + random-normal 0 current-sigma-adaptation ]
-      ask receiver [ set opinion x2-new]
-    ]
-
-    ;; exogenous noise self
-    ;; if ( random-float 1 < prob-exogenous )
-    ;; [ let x1-post opinion
-    ;;  let x1-new -999
-    ;; while [x1-new > upper-end  or x1-new < lower-end]
-    ;; [ set x1-new x1-post + random-normal 0 sigma-exogenous ]
-    ;; set opinion x1-new
-    ;; ]
-
   ]
   update-colors
   tick
@@ -121,10 +198,10 @@ to update-colors
 end
 @#$#@#$#@
 GRAPHICS-WINDOW
-24
-79
-242
-298
+25
+95
+443
+514
 -1
 -1
 10.0
@@ -134,12 +211,12 @@ GRAPHICS-WINDOW
 1
 1
 0
-1
-1
-1
 0
+0
+1
+-20
 20
-0
+-20
 20
 0
 0
@@ -148,15 +225,15 @@ ticks
 30.0
 
 SLIDER
-805
-90
 985
+90
+1165
 123
 sigma-ambiguity-within-group
 sigma-ambiguity-within-group
 0
 1
-0.11
+0.0
 0.01
 1
 NIL
@@ -227,10 +304,10 @@ NIL
 0
 
 PLOT
-220
-410
-430
-584
+655
+435
+865
+609
 Variance
 ticks
 varaince
@@ -245,10 +322,10 @@ PENS
 "default" 1.0 0 -16777216 true "" "plot standard-deviation [opinion] of turtles"
 
 PLOT
-31
-407
-211
-585
+466
+432
+646
+610
 mean
 ticks
 mean
@@ -263,9 +340,9 @@ PENS
 "default" 1.0 0 -2674135 true "" "plot mean [opinion] of turtles"
 
 SLIDER
-600
+785
 145
-772
+957
 178
 sigma-adaptation
 sigma-adaptation
@@ -278,9 +355,9 @@ NIL
 HORIZONTAL
 
 SLIDER
-600
+785
 200
-772
+957
 233
 sigma-selectivity
 sigma-selectivity
@@ -292,41 +369,11 @@ sigma-selectivity
 NIL
 HORIZONTAL
 
-SLIDER
-40
-675
-212
-708
-sigma-exogenous
-sigma-exogenous
-0
-1
-0.0
-0.01
-1
-NIL
-HORIZONTAL
-
-SLIDER
-40
-710
-212
-743
-prob-exogenous
-prob-exogenous
-0
-1
-0.0
-0.01
-1
-0
-HORIZONTAL
-
 PLOT
 1220
-30
+10
 1660
-150
+130
 histogram all
 opinion
 frequency
@@ -341,9 +388,9 @@ PENS
 "default" 0.2 1 -16777216 false "" "histogram [opinion] of turtles"
 
 TEXTBOX
-295
+480
 50
-536
+721
 76
 Different types of Noise\n
 20
@@ -351,9 +398,9 @@ Different types of Noise\n
 1
 
 TEXTBOX
-297
+482
 89
-595
+780
 295
 Ambiguity noise strength\n(affects message)\n\nAdaptation noise strength\n(affects receiver opinion **after** social influence)\n\nSelectivity noise strength\n(affects receiver's confidence bound)\n
 12
@@ -361,25 +408,25 @@ Ambiguity noise strength\n(affects message)\n\nAdaptation noise strength\n(affec
 1
 
 SLIDER
-600
+785
 90
-775
+960
 123
 sigma-ambiguity
 sigma-ambiguity
 0
 1
-0.11
+0.0
 0.01
 1
 NIL
 HORIZONTAL
 
 PLOT
-860
-510
-1200
-665
+1220
+650
+1665
+770
 histogram-identity
 opinion
 frequency
@@ -397,26 +444,11 @@ PENS
 "group_r" 0.4 1 -14454117 true "" "histogram [opinion] of turtles with [identity = \"right\"]"
 "none" 0.4 1 -7500403 true "" "histogram [opinion] of turtles with [identity = \"none\"]"
 
-SLIDER
-225
-700
-467
-733
-confidence-threshold-diverge
-confidence-threshold-diverge
-0
-2
-2.0
-0.01
-1
-NIL
-HORIZONTAL
-
 MONITOR
-1700
-570
-1750
-615
+1670
+565
+1720
+610
 Left
 count turtles with [ identity = \"left\" ]
 17
@@ -424,10 +456,10 @@ count turtles with [ identity = \"left\" ]
 11
 
 MONITOR
-1690
-455
-1768
-500
+1665
+440
+1743
+485
 Middle left
 count turtles with [ identity = \"middle left\" ]
 17
@@ -435,10 +467,10 @@ count turtles with [ identity = \"middle left\" ]
 11
 
 MONITOR
-1675
-330
-1763
-375
+1665
+290
+1753
+335
 middle right
 count turtles with [ identity = \"middle right\" ]
 17
@@ -446,10 +478,10 @@ count turtles with [ identity = \"middle right\" ]
 11
 
 MONITOR
-1680
-185
-1737
-230
+1665
+170
+1722
+215
 right
 count turtles with [ identity = \"right\" ]
 17
@@ -458,9 +490,9 @@ count turtles with [ identity = \"right\" ]
 
 PLOT
 1220
-150
+130
 1660
-270
+250
 Histogram Right
 opinion
 frequency
@@ -476,9 +508,9 @@ PENS
 
 PLOT
 1220
-270
+250
 1660
-410
+390
 Histogram Middle Right
 opinion
 frequency
@@ -494,9 +526,9 @@ PENS
 
 PLOT
 1220
-545
+525
 1665
-665
+645
 Histogram Left
 opinion
 frequency
@@ -512,9 +544,9 @@ PENS
 
 PLOT
 1220
-420
+400
 1660
-540
+520
 Histogram Middle Left
 opinion
 frequency
@@ -537,16 +569,16 @@ homophily
 homophily
 0
 1
-0.0
+0.73
 0.01
 1
 NIL
 HORIZONTAL
 
 SWITCH
-795
+980
 40
-985
+1170
 73
 identity-dependent-noise
 identity-dependent-noise
@@ -555,10 +587,10 @@ identity-dependent-noise
 -1000
 
 INPUTBOX
-50
-310
-207
-370
+265
+20
+422
+80
 seed
 48.0
 1
@@ -566,9 +598,9 @@ seed
 Number
 
 SLIDER
-805
-145
 985
+145
+1165
 178
 sigma-adaptation-within-group
 sigma-adaptation-within-group
@@ -581,9 +613,9 @@ NIL
 HORIZONTAL
 
 SLIDER
-805
-200
 985
+200
+1165
 233
 sigma-selectivity-within-group
 sigma-selectivity-within-group
@@ -594,6 +626,87 @@ sigma-selectivity-within-group
 1
 NIL
 HORIZONTAL
+
+SWITCH
+110
+665
+312
+698
+create-random-agents
+create-random-agents
+1
+1
+-1000
+
+SLIDER
+330
+665
+512
+698
+group-A-initial-mean
+group-A-initial-mean
+-1
+1
+-0.5
+0.01
+1
+NIL
+HORIZONTAL
+
+SLIDER
+330
+705
+512
+738
+group-B-initial-mean
+group-B-initial-mean
+-1
+1
+0.5
+0.01
+1
+NIL
+HORIZONTAL
+
+SLIDER
+520
+665
+692
+698
+group-A-std
+group-A-std
+0
+2
+0.1
+0.01
+1
+NIL
+HORIZONTAL
+
+SLIDER
+520
+705
+692
+738
+group-B-std
+group-B-std
+0
+2
+0.1
+0.01
+1
+NIL
+HORIZONTAL
+
+TEXTBOX
+95
+520
+415
+551
+NOTE: We are only showing 10 % of all links.
+12
+0.0
+1
 
 @#$#@#$#@
 ## WHAT IS IT?
@@ -1200,7 +1313,7 @@ NetLogo 6.4.0
     <metric>mean [abs opinion] of turtles with [identity = "middle right"]</metric>
     <metric>mean [abs opinion] of turtles with [identity = "middle left"]</metric>
     <metric>mean [abs opinion] of turtles with [identity = "left"]</metric>
-    <runMetricsCondition>( ticks mod 1000 ) = 0</runMetricsCondition>
+    <runMetricsCondition>( ticks mod 10000 ) = 0</runMetricsCondition>
     <enumeratedValueSet variable="identity-dependent-noise">
       <value value="false"/>
     </enumeratedValueSet>
@@ -1229,6 +1342,13 @@ NetLogo 6.4.0
     </enumeratedValueSet>
     <enumeratedValueSet variable="sigma-selectivity">
       <value value="0"/>
+      <value value="0.05"/>
+      <value value="0.1"/>
+      <value value="0.15"/>
+      <value value="0.2"/>
+      <value value="0.25"/>
+      <value value="0.3"/>
+      <value value="0.35"/>
     </enumeratedValueSet>
     <enumeratedValueSet variable="sigma-exogenous">
       <value value="0"/>
@@ -1238,13 +1358,6 @@ NetLogo 6.4.0
     </enumeratedValueSet>
     <enumeratedValueSet variable="sigma-adaptation">
       <value value="0"/>
-      <value value="0.05"/>
-      <value value="0.1"/>
-      <value value="0.15"/>
-      <value value="0.2"/>
-      <value value="0.25"/>
-      <value value="0.3"/>
-      <value value="0.35"/>
     </enumeratedValueSet>
     <enumeratedValueSet variable="sigma-adaptation-within-group">
       <value value="0"/>
@@ -1423,6 +1536,167 @@ NetLogo 6.4.0
       <value value="47"/>
       <value value="48"/>
       <value value="49"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="run in-out noise" repetitions="1" sequentialRunOrder="false" runMetricsEveryStep="false">
+    <setup>setup</setup>
+    <go>go</go>
+    <timeLimit steps="100000"/>
+    <metric>standard-deviation [opinion] of turtles</metric>
+    <metric>mean [opinion] of turtles</metric>
+    <metric>mean [abs opinion] of turtles</metric>
+    <metric>standard-deviation [opinion] of turtles with [identity = "right"]</metric>
+    <metric>standard-deviation [opinion] of turtles with [identity = "middle right"]</metric>
+    <metric>standard-deviation [opinion] of turtles with [identity = "middle left"]</metric>
+    <metric>standard-deviation [opinion] of turtles with [identity = "left"]</metric>
+    <metric>mean [opinion] of turtles with [identity = "right"]</metric>
+    <metric>mean [opinion] of turtles with [identity = "middle right"]</metric>
+    <metric>mean [opinion] of turtles with [identity = "middle left"]</metric>
+    <metric>mean [opinion] of turtles with [identity = "left"]</metric>
+    <metric>mean [abs opinion] of turtles with [identity = "right"]</metric>
+    <metric>mean [abs opinion] of turtles with [identity = "middle right"]</metric>
+    <metric>mean [abs opinion] of turtles with [identity = "middle left"]</metric>
+    <metric>mean [abs opinion] of turtles with [identity = "left"]</metric>
+    <runMetricsCondition>( ticks mod 100000 ) = 0</runMetricsCondition>
+    <enumeratedValueSet variable="identity-dependent-noise">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="sigma-ambiguity-within-group">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="sigma-ambiguity">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="confidence-bound">
+      <value value="0.3"/>
+      <value value="0.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="learning-rate">
+      <value value="0.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="prob-exogenous">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="sigma-selectivity">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="sigma-exogenous">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="sigma-selectivity-within-group">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="sigma-adaptation">
+      <value value="0"/>
+      <value value="0.05"/>
+      <value value="0.1"/>
+      <value value="0.15"/>
+      <value value="0.2"/>
+      <value value="0.25"/>
+      <value value="0.3"/>
+      <value value="0.35"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="sigma-adaptation-within-group">
+      <value value="0"/>
+      <value value="0.05"/>
+      <value value="0.1"/>
+      <value value="0.15"/>
+      <value value="0.2"/>
+      <value value="0.25"/>
+      <value value="0.3"/>
+      <value value="0.35"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="homophily">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="seed">
+      <value value="0"/>
+      <value value="1"/>
+      <value value="2"/>
+      <value value="3"/>
+      <value value="4"/>
+      <value value="5"/>
+      <value value="6"/>
+      <value value="7"/>
+      <value value="8"/>
+      <value value="9"/>
+      <value value="10"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="run in-out noise (shorter)" repetitions="1" sequentialRunOrder="false" runMetricsEveryStep="false">
+    <setup>setup</setup>
+    <go>go</go>
+    <timeLimit steps="100000"/>
+    <metric>standard-deviation [opinion] of turtles</metric>
+    <metric>mean [opinion] of turtles</metric>
+    <metric>mean [abs opinion] of turtles</metric>
+    <metric>standard-deviation [opinion] of turtles with [identity = "right"]</metric>
+    <metric>standard-deviation [opinion] of turtles with [identity = "middle right"]</metric>
+    <metric>standard-deviation [opinion] of turtles with [identity = "middle left"]</metric>
+    <metric>standard-deviation [opinion] of turtles with [identity = "left"]</metric>
+    <metric>mean [opinion] of turtles with [identity = "right"]</metric>
+    <metric>mean [opinion] of turtles with [identity = "middle right"]</metric>
+    <metric>mean [opinion] of turtles with [identity = "middle left"]</metric>
+    <metric>mean [opinion] of turtles with [identity = "left"]</metric>
+    <metric>mean [abs opinion] of turtles with [identity = "right"]</metric>
+    <metric>mean [abs opinion] of turtles with [identity = "middle right"]</metric>
+    <metric>mean [abs opinion] of turtles with [identity = "middle left"]</metric>
+    <metric>mean [abs opinion] of turtles with [identity = "left"]</metric>
+    <runMetricsCondition>( ticks mod 100000 ) = 0</runMetricsCondition>
+    <enumeratedValueSet variable="identity-dependent-noise">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="sigma-ambiguity-within-group">
+      <value value="0"/>
+      <value value="0.1"/>
+      <value value="0.2"/>
+      <value value="0.3"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="sigma-ambiguity">
+      <value value="0"/>
+      <value value="0.1"/>
+      <value value="0.2"/>
+      <value value="0.3"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="confidence-bound">
+      <value value="0.3"/>
+      <value value="0.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="learning-rate">
+      <value value="0.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="prob-exogenous">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="sigma-selectivity">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="sigma-exogenous">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="sigma-selectivity-within-group">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="sigma-adaptation">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="sigma-adaptation-within-group">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="homophily">
+      <value value="0.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="seed">
+      <value value="0"/>
+      <value value="1"/>
+      <value value="2"/>
+      <value value="3"/>
+      <value value="4"/>
+      <value value="5"/>
+      <value value="6"/>
+      <value value="7"/>
+      <value value="8"/>
+      <value value="9"/>
     </enumeratedValueSet>
   </experiment>
 </experiments>

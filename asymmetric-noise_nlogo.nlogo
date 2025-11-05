@@ -14,19 +14,18 @@ to setup
   file-close-all
 
   if-else ( create-random-agents ) [
-    create-turtles 100 [
+    create-turtles 50 [
       set opinion min list 1 ( max list -1 random-normal group-A-initial-mean group-A-std )
           set identity  "left"
           set shape "circle"
           set size 1
           move-to one-of patches
         ]
-    create-turtles 100 [
+    create-turtles 50 [
       set opinion  min list 1 ( max list -1 random-normal group-B-initial-mean group-B-std )
           set identity "right"
           set shape "square"
           set size 1
-          ;;move-to one-of patches
        ]
   ]  [
     let fname ( word "datasets/ess11_austria_imueclt_n200_seed" seed ".csv" )
@@ -44,7 +43,6 @@ to setup
           set identity  item 2 data
           set shape ifelse-value( identity = "left") [ "circle" ][ifelse-value( identity = "middle left") ["star"][ifelse-value( identity = "none") ["x"] [ifelse-value( identity = "middle right") ["triangle"] [ ifelse-value( identity = "right") ["square"]["line"] ]]]]
           set size 1
-          ;;move-to one-of patches
         ]
       ]
       set n n + 1
@@ -57,6 +55,7 @@ to setup
   layout-nodes
 
   update-colors ;;color represents opinion
+
   reset-ticks
 
 end
@@ -87,7 +86,7 @@ end
 
 to maslov-sneppen-rewire [h]
   let all-links links
-  let n-rewires count all-links
+  let n-rewires 2 * count all-links
 
   repeat n-rewires [
     if (random-float 1 < h) [
@@ -248,7 +247,7 @@ confidence-bound
 confidence-bound
 0
 1
-0.25
+0.24
 0.01
 1
 NIL
@@ -270,10 +269,10 @@ NIL
 HORIZONTAL
 
 BUTTON
-29
-23
-96
-56
+50
+40
+117
+73
 NIL
 setup
 NIL
@@ -287,10 +286,10 @@ NIL
 1
 
 BUTTON
-144
-26
-207
-59
+135
+40
+198
+73
 NIL
 go
 T
@@ -304,10 +303,10 @@ NIL
 0
 
 PLOT
-655
-435
-865
-609
+775
+470
+1010
+644
 Variance
 ticks
 varaince
@@ -322,10 +321,10 @@ PENS
 "default" 1.0 0 -16777216 true "" "plot standard-deviation [opinion] of turtles"
 
 PLOT
-466
-432
-646
-610
+476
+467
+771
+645
 mean
 ticks
 mean
@@ -334,10 +333,12 @@ mean
 -1.0
 1.0
 true
-false
+true
 "" ""
 PENS
-"default" 1.0 0 -2674135 true "" "plot mean [opinion] of turtles"
+"default" 1.0 0 -16777216 true "" "plot mean [opinion] of turtles"
+"left" 1.0 0 -14439633 true "" "plot mean [opinion] of turtles with [identity = \"left\"]"
+"right" 1.0 0 -12345184 true "" "plot mean [opinion] of turtles with [identity = \"right\"]"
 
 SLIDER
 785
@@ -401,7 +402,7 @@ TEXTBOX
 482
 89
 780
-295
+234
 Ambiguity noise strength\n(affects message)\n\nAdaptation noise strength\n(affects receiver opinion **after** social influence)\n\nSelectivity noise strength\n(affects receiver's confidence bound)\n
 12
 0.0
@@ -416,7 +417,7 @@ sigma-ambiguity
 sigma-ambiguity
 0
 1
-0.0
+0.19
 0.01
 1
 NIL
@@ -569,27 +570,27 @@ homophily
 homophily
 0
 1
-0.73
+1.0
 0.01
 1
 NIL
 HORIZONTAL
 
 SWITCH
-980
-40
-1170
-73
+985
+45
+1175
+78
 identity-dependent-noise
 identity-dependent-noise
-0
+1
 1
 -1000
 
 INPUTBOX
-265
+245
 20
-422
+325
 80
 seed
 48.0
@@ -634,7 +635,7 @@ SWITCH
 698
 create-random-agents
 create-random-agents
-1
+0
 1
 -1000
 
@@ -647,7 +648,7 @@ group-A-initial-mean
 group-A-initial-mean
 -1
 1
--0.5
+-0.77
 0.01
 1
 NIL
@@ -662,7 +663,7 @@ group-B-initial-mean
 group-B-initial-mean
 -1
 1
-0.5
+0.75
 0.01
 1
 NIL
@@ -704,6 +705,16 @@ TEXTBOX
 415
 551
 NOTE: We are only showing 10 % of all links.
+12
+0.0
+1
+
+TEXTBOX
+795
+375
+1100
+456
+The network is set up as fully connected identity groups, and then each link is rewired with probability = 1-homophily . \n\nNote: smaller groups thus have less connections.
 12
 0.0
 1

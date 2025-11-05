@@ -2,157 +2,172 @@
 <model version="NetLogo 7.0.0" snapToGrid="true">
   <code><![CDATA[extensions [palette csv]
 
-globals [opinion-max opinion-min opinion-mid count-out-group-int num-agents convergenceRate]
+globals [
+  opinion-max
+  opinion-min
+  opinion-mid
+  count-out-group-int
+  convergenceRate
+]
 
-turtles-own [myOpinion myIdentity ]
+turtles-own [
+  myOpinion
+  myIdentity
+]
+
+links-own [
+  opinionDistance
+]
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;; SETUP and INITIALISATION        ;;;; 
+;;;; 1. SETUP AND INITIALIZATION     ;;;; 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
 
 to setup
-  
-  if-else (not exploration) [
-    random-seed seed
-  ][
-    set seed -1
-  ]
-  
+  if (randomize-seed) [ set seed random int 999999 ]
+  random-seed seed
   clear-all
-  
+
   set convergenceRate 0.5
   set opinion-min 0
-  set opinion-max 1 ; 
-  set opinion-mid ( opinion-max + opinion-min ) / 2
-  set num-agents 100
+  set opinion-max 1
+  set opinion-mid (opinion-max + opinion-min) / 2
 
- create-turtles ( num-agents / 2 ) [
-      if-else uniform-initial-opinion [
-        set myOpinion random-float ( opinion-max - opinion-min) + opinion-min 
-      ][
-        set myOpinion random-float 0.5  * ( opinion-max - opinion-min) + opinion-min ;
-        ; Alternative Gaussian Initialisation: set opinion min list opinion-max ( max list opinion-min random-normal group-A-initial-mean group-A-std )
-      ]
-          set myIdentity  "left"
-          set shape "circle"
-          set size 1
-          move-to one-of patches 
-        ]
-  create-turtles ( num-agents / 2 ) [
-      if-else uniform-initial-opinion [
-        set myOpinion random-float ( opinion-max - opinion-min) + opinion-min
-      ][
-        set myOpinion ( opinion-mid + random-float 0.5 ) * ( opinion-max - opinion-min) + opinion-min  ; 
-        ; Alternative Gaussian Initialisation: set opinion min list opinion-max ( max list opinion-min random-normal group-B-initial-mean group-B-std )
-      ]
-          set myIdentity "right"
-          set shape "square"
-          set size 1
-          move-to one-of patches 
-       ]
+  ;; create two groups of agents
+  setup-agents "left" "circle" 0.0 0.5
+  setup-agents "right" "square" 0.5 1.0
 
-  ; identity-dependent ambiguity
-  if (outgroupAmbiguity = -1) [ 
-    set outgroupAmbiguity ingroupAmbiguity 
+  ;; handle ambiguity setting (if equal between and within)
+  if (outgroupAmbiguity = -1) [
+    set outgroupAmbiguity ingroupAmbiguity
   ]
   
-  ; create network
-  setup-network-with-homophily (homophily)
-  
+  ;; create and arrange the social network
+  setup-network-with-homophily homophily
   layout-nodes
   
-  update-colors ;;color represents myOpinion
-
+  ;; initialize visuals and metrics
+  update-links
+  update-colors
+  
   reset-ticks
+end
 
+
+;; Helper: creates one identity group of turtles
+;; range-min / range-max are FRACTIONS of the [opinion-min, opinion-max] interval
+;; e.g., left: 0.0 0.5, right: 0.5 1.0
+to setup-agents [ group-id group-shape range-min range-max ]
+  create-turtles (num-agents / 2) [
+    ifelse uniform-initial-opinion
+    [
+      ;; uniform over full opinion range
+      set myOpinion opinion-min + random-float (opinion-max - opinion-min)
+    ]
+    [
+      ;; uniform over the specified FRACTION of the opinion range
+      let frac range-min + random-float (range-max - range-min)
+      set myOpinion opinion-min + frac * (opinion-max - opinion-min)
+    ]
+    set myIdentity group-id
+    set shape group-shape
+    set size 1
+    move-to one-of patches
+  ]
 end
 
 
 
 ;;;;;;;;;;;;;;;;;;;;;;
-;;;; MODEL        ;;;; 
+;;;; 2. MODEL LOOP ;;; 
 ;;;;;;;;;;;;;;;;;;;;;;
 
 to go
   if (ticks > 100000) [ stop ]
-  
-  ;; select a sender randomly
-  ask one-of turtles [
-    
-    let myOpinionSender myOpinion 
-    
-    ; select receiver from sender network
-    let receiver one-of link-neighbors
-    
-    if receiver != nobody [
-      
-      let myOpinionReceiver [myOpinion] of receiver  
-      
-      ;; determine level of ambiguity
-      let within-group?  ( myIdentity = [myIdentity] of receiver )
-      let current-ambiguity ifelse-value( within-group? ) [ingroupAmbiguity] [outgroupAmbiguity]
-      
-      ;; draw ambiguous message that is between opinion-min and opinion-max
-      let messageS2R -999
-      while [messageS2R > opinion-max or messageS2R < opinion-min]
-      [ set messageS2R myOpinionSender + random-normal 0 current-ambiguity   ]  
+  if not any? links with [opinionDistance > 0 and opinionDistance < confidenceBound] [ stop ]
 
-      ; opinion update
-      if (abs (myOpinionReceiver - messageS2R) < confidenceBound ) [  ;+ random-normal 0 sigma-selectivity
-        ; receiver accepts the message --> now update
-        let myOpinionReceiver-new (myOpinionReceiver + convergenceRate * (messageS2R - myOpinionReceiver)) 
-        ask receiver [ set myOpinion myOpinionReceiver-new]
-      ]
+  ;; randomly select one sender
+  ask one-of turtles [
+    let receiver one-of link-neighbors
+    if receiver != nobody [
+      interact-with receiver
     ]
   ]
-  
+
+  update-links
   update-colors
-  
   tick
-
 end
 
 
+;; Handles message exchange and opinion updating between two agents
+to interact-with [receiver]
+  let myOpinionSender myOpinion
+  let myOpinionReceiver [myOpinion] of receiver
 
-;;;;;;;;;;;;;;;;;;;;;;
-;;;; Output       ;;;; 
-;;;;;;;;;;;;;;;;;;;;;;
+  ;; determine if receiver is in same identity group
+  let within-group? (myIdentity = [myIdentity] of receiver)
+  let current-ambiguity ifelse-value within-group? [ingroupAmbiguity] [outgroupAmbiguity]
 
-to-report final-opinions
-  ;; Return opinions sorted by agent who number
-  let sorted-turtles sort-by [ [a b] -> [who] of a < [who] of b ] turtles
-  let opinion-list map [ t -> [myOpinion] of t ] sorted-turtles
-  report (word opinion-list)
+  ;; generate ambiguous message bounded by opinion limits
+  let message create-ambiguous-message myOpinionSender current-ambiguity
+
+  ;; update receiver's opinion if message is within confidence bound
+  if (abs (myOpinionReceiver - message) < confidenceBound) [
+    let myOpinionReceiver-new (myOpinionReceiver + convergenceRate * (message - myOpinionReceiver))
+    ask receiver [ set myOpinion myOpinionReceiver-new ]
+  ]
 end
 
 
+;; Helper: draws a bounded ambiguous message
+to-report create-ambiguous-message [base-opinion ambiguity]
+  let msg -999
+  while [msg > opinion-max or msg < opinion-min] [
+    set msg base-opinion + random-normal 0 ambiguity
+  ]
+  report msg
+end
 
-;;;;;;;;;;;;;;;;;;;;;;
-;;;; NETWORK STUFF;;;; 
-;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;; 3. NETWORK CONSTRUCTION ;;;; 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 to setup-network-with-homophily [target-homophily]
-  ;; target-homophily: 1.0 = fully cave-like, 0.0 = random
-  
   clear-links
   setup-caves-network-by-identity
   
-  ; expectation of in-group links in random, non-homophilic network
-  let total-agents count turtles
+  ;; calculate expected and target homophily
   let random-expected-homophily calculate-random-expected-homophily
+  let actual-target random-expected-homophily + (target-homophily * (1 - random-expected-homophily))
   
-  ; in-group links we target for
-  let actual-target random-expected-homophily + (target-homophily * (1.0 - random-expected-homophily))
-  
-  ; how many swaps needed
+  ;; compute link swap targets
   let total-links count links
   let current-in-group-links count-in-group-links
   let target-in-group-links total-links * actual-target
   let swaps-needed (current-in-group-links - target-in-group-links) / 2
   
-  ;; swap links using Maslov Sneppen rewiring
+  ;; adjust structure by Maslov–Sneppen rewiring
+  rewire-links swaps-needed
+end
+
+
+;; Creates fully connected in-group “caves”
+to setup-caves-network-by-identity
+  ask turtles [
+    ask other turtles with [myIdentity = [myIdentity] of myself] [
+      if random-float 1 < share-ingroup-connections [
+        create-link-with myself
+      ]
+    ]
+  ]
+end;setup-caves-network-by-identity
+
+
+;; Performs random link rewiring to reach target homophily
+to rewire-links [swaps-needed]
   let swaps-done 0
   let max-attempts swaps-needed * 100
   let attempts 0
@@ -160,118 +175,114 @@ to setup-network-with-homophily [target-homophily]
   while [swaps-done < swaps-needed and attempts < max-attempts] [
     let edge1 one-of links
     let edge2 one-of links
-    
-    if (edge1 != edge2) [
+    if edge1 != edge2 [
       let a1 [end1] of edge1
       let b1 [end2] of edge1
       let a2 [end1] of edge2
       let b2 [end2] of edge2
-      
-      ; check if the links are in-group links
-      let edge1-in-group ([myIdentity] of a1 = [myIdentity] of b1)
-      let edge2-in-group ([myIdentity] of a2 = [myIdentity] of b2)
-      
-      if (edge1-in-group and edge2-in-group and
-          a1 != b2 and a2 != b1 and a1 != a2 and b1 != b2) [
-        
-        ; swap edge1 and edge2
-        let new-link1-between ([myIdentity] of a1 != [myIdentity] of b2)
-        let new-link2-between ([myIdentity] of a2 != [myIdentity] of b1)
-        
-        if (new-link1-between and new-link2-between) [
-          ask a1 [
-            if not link-neighbor? b2 [
-              ask a2 [
-                if not link-neighbor? b1 [
-                  ask edge1 [ die ]
-                  ask edge2 [ die ]
-                  ask a1 [ create-link-with b2 ]
-                  ask a2 [ create-link-with b1 ]
-                  set swaps-done swaps-done + 1
-                ]
-              ]
-            ]
-          ]
-        ]
+
+      ;; prevent duplicate or invalid rewiring
+      if (valid-rewire? a1 b1 a2 b2) [
+        ask edge1 [ die ]
+        ask edge2 [ die ]
+        ask a1 [ create-link-with b2 ]
+        ask a2 [ create-link-with b1 ]
+        set swaps-done swaps-done + 1
       ]
     ]
-    
     set attempts attempts + 1
   ]
 end
 
+
+;; Helper: checks if link swap preserves valid, cross-group structure
+to-report valid-rewire? [a1 b1 a2 b2]
+  report (
+    ([myIdentity] of a1 = [myIdentity] of b1) and
+    ([myIdentity] of a2 = [myIdentity] of b2) and
+    a1 != b2 and a2 != b1 and
+    a1 != a2 and b1 != b2 and
+    (not [link-neighbor? b2] of a1) and
+    (not [link-neighbor? b1] of a2)
+  )
+end
+
+
+;; Expected proportion of in-group links in random network
 to-report calculate-random-expected-homophily
-  ; calculate what fraction of in-group links we would expect in a non-homophilic network
   let identity-groups remove-duplicates [myIdentity] of turtles
-  let total-agents count turtles
+  let total count turtles
   let expected 0
-  
   foreach identity-groups [ id ->
     let group-size count turtles with [myIdentity = id]
-    let proportion (group-size / total-agents)
-    set expected expected + (proportion * (group-size - 1) / (total-agents - 1))
+    let p group-size / total
+    set expected expected + (p * (group-size - 1) / (total - 1))
   ]
-  
   report expected
 end
 
-to setup-caves-network-by-identity
-  ; connect all turtles in each of the in-group 
-  let identity-groups remove-duplicates [myIdentity] of turtles
-  let groups []
 
-  ;; ids of agents in each group
-  foreach identity-groups [ id ->
-    set groups lput (turtles with [myIdentity = id]) groups
-  ]
+;;;;;;;;;;;;;;;;;;;;;;
+;;;; 4. REPORTERS ;;;; 
+;;;;;;;;;;;;;;;;;;;;;;
 
-  ;; create caves
-  foreach groups [ group ->
-    ask group [
-      ask other group [
-        if not link-neighbor? myself [
-
-          create-link-with myself
-         
-        ]
-      ]
-    ]
-  ]
-
+to-report final-opinions
+  let sorted-turtles sort-by [[a b] -> [who] of a < [who] of b] turtles
+  report map [t -> [myOpinion] of t] sorted-turtles
 end
 
+to-report extremeness
+  report mean [abs (0.5 - myOpinion)] of turtles
+end
 
+to-report extremeness-left
+  report mean [abs (0.5 - myOpinion)] of turtles with [myIdentity = "left"]
+end
 
+to-report extremeness-right
+  report mean [abs (0.5 - myOpinion)] of turtles with [myIdentity = "right"]
+end
 
+to-report polarization
+  let avg-left mean [myOpinion] of turtles with [myIdentity = "left"]
+  let avg-right mean [myOpinion] of turtles with [myIdentity = "right"]
+  report abs (avg-left - avg-right)
+end
 
+to-report diversity
+  report standard-deviation [myOpinion] of turtles
+end
 
-;;; VISUALS + REPORTERS ;;; 
+to-report diversity-left
+  report standard-deviation [myOpinion] of turtles with [myIdentity = "left"]
+end
 
+to-report diversity-right
+  report standard-deviation [myOpinion] of turtles with [myIdentity = "right"]
+end
 
-to update-colors
-  ask turtles [
-    set color ifelse-value (myOpinion < opinion-mid) [94 +  myOpinion * 10][ 19 - (myOpinion - opinion-mid) * 10]
-  ]
+to-report mean-opinion
+  report mean [myOpinion] of turtles
+end
+
+to-report mean-opinion-left
+  report mean [myOpinion] of turtles with [myIdentity = "left"]
+end
+
+to-report mean-opinion-right
+  report mean [myOpinion] of turtles with [myIdentity = "right"]
+end
+
+to-report dyadic-opinion-distance
+  report sum [opinionDistance] of links / count-total-links
 end
 
 to-report count-in-group-links
-  let in-group-count 0
-  
-  ask links [
-    let node1-identity [myIdentity] of end1
-    let node2-identity [myIdentity] of end2
-    
-    if node1-identity = node2-identity [
-      set in-group-count in-group-count + 1
-    ]
-  ]
-  
-  report in-group-count
+  report count links with [[myIdentity] of end1 = [myIdentity] of end2]
 end
 
-
 to-report count-out-group-links
-  report ( count links ) - count-in-group-links
+  report (count links) - count-in-group-links
 end
 
 to-report count-total-links
@@ -279,42 +290,65 @@ to-report count-total-links
 end
 
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;; 5. VISUAL + MISC.    ;;;; 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+to update-links
+  ask links [
+    set opinionDistance abs(([myOpinion] of end1) - ([myOpinion] of end2))
+  ]
+end
+
+to update-colors
+  ask turtles [
+    set color ifelse-value (myOpinion < opinion-mid)
+      [94 + myOpinion * 10]
+      [19 - (myOpinion - opinion-mid) * 10]
+  ]
+end
+
 to layout-nodes
   let n count turtles
-  let radius 17  ; adjust this to make the circle bigger or smaller
-
+  let radius 17
   ask turtles [
     let angle (who * 360 / n)
-    let r radius + min list 1.9 random-normal 0 2  ; radius with some noise
-    let x r * cos angle
-    let y r * sin angle
+    let me-radius radius - (who mod 3)
+    let x me-radius * cos angle
+    let y me-radius * sin angle
     setxy x y
     set heading angle
   ]
-
   ask links [
-    if-else (random-float 1.0) < 0.1 [
-      show-link
-    ] [
-      hide-link
+    set color white
+    palette:set-alpha (1 - 0.5 * show-link-share) * palette:alpha
+    let id1 [myIdentity] of end1
+    let id2 [myIdentity] of end2
+    ifelse (id1 = "left" and id2 = "left") [
+      set color blue
+      palette:set-alpha (0.75 - 0.5 * show-link-share) * palette:alpha
     ]
+    [ ifelse (id1 = "right" and id2 = "right") [
+      set color red
+      palette:set-alpha (0.75 - 0.5 * show-link-share) * palette:alpha
+      ]
+      [
+        set color gray  ;; optional: for cross-group links
+      ]
+    ]
+    ifelse random-float 1.0 < show-link-share [ show-link ] [ hide-link ]
   ]
 end
 
 
+;; Optional plotting utilities
 to setup-turtle-plot
   set-current-plot "Turtle X Opinions"
   clear-plot
-  ; Create one pen per turtle, named by who number
   ask turtles [
     create-temporary-plot-pen (word "turtle-" who)
-    if-else (myIdentity = "left") [
-      set-plot-pen-color orange 
-  ][
-      set-plot-pen-color sky 
+    set-plot-pen-color ifelse-value (myIdentity = "left") [orange] [sky]
   ]
-  ]
-  
 end
 
 to update-turtle-plot
@@ -324,6 +358,7 @@ to update-turtle-plot
     plotxy ticks myOpinion
   ]
 end
+
 
 
 
@@ -352,39 +387,90 @@ end
 ;end 
 ]]></code>
   <widgets>
-    <view x="25" wrappingAllowedX="false" y="102" frameRate="30.0" minPycor="-20" height="414" showTickCounter="true" patchSize="10.0" fontSize="10" wrappingAllowedY="false" width="414" tickCounterLabel="ticks" maxPycor="20" updateMode="0" maxPxcor="20" minPxcor="-20"></view>
-    <button x="135" y="40" height="40" disableUntilTicks="true" forever="true" kind="Observer" width="63">go</button>
-    <switch x="365" y="40" height="40" on="false" variable="exploration" width="85" display="exploration"></switch>
-    <note x="35" y="530" backgroundDark="0" fontSize="12" width="320" markdown="false" height="31" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">NOTE: To speed up the visualisation, we only show 10 % of all links.</note>
-    <plot x="480" autoPlotX="true" yMax="1.0" autoPlotY="true" yAxis="mean" y="320" xMin="0.0" height="192" legend="true" xMax="1.0" yMin="0.0" width="295" xAxis="ticks" display="mean">
+    <view x="10" wrappingAllowedX="false" y="130" frameRate="30.0" minPycor="-20" height="445" showTickCounter="true" patchSize="10.76" fontSize="10" wrappingAllowedY="false" width="445" tickCounterLabel="ticks" maxPycor="20" updateMode="0" maxPxcor="20" minPxcor="-20"></view>
+    <monitor x="870" precision="2" y="515" height="60" fontSize="11" width="100" display="diversity">standard-deviation [myOpinion] of turtles</monitor>
+    <monitor x="570" precision="2" y="515" height="60" fontSize="11" width="100" display="extremeness">mean [abs ( myOpinion - opinion-mid ) ] of turtles</monitor>
+    <monitor x="465" precision="2" y="515" height="60" fontSize="11" width="100" display="mean">mean [myOpinion] of turtles</monitor>
+    <monitor x="675" precision="2" y="515" height="60" fontSize="11" width="190" display="polarisation (Pol0 Esteban-Ray)">abs ( (mean [myOpinion] of turtles with [myIdentity = "left"]) - (mean [myOpinion] of turtles with [myIdentity = "right"]))</monitor>
+    <slider x="465" step="0.01" y="200" max="1" width="175" display="ingroupAmbiguity" height="50" min="0" direction="Horizontal" default="0.1" variable="ingroupAmbiguity"></slider>
+    <slider x="465" step="0.01" y="260" max="1" width="175" display="confidenceBound" height="50" min="0" direction="Horizontal" default="0.2" variable="confidenceBound"></slider>
+    <slider x="650" step="0.05" y="260" max="1" width="175" display="homophily" height="50" min="0" direction="Horizontal" default="0.95" variable="homophily"></slider>
+    <slider x="650" step="0.01" y="200" max="1" width="175" display="outgroupAmbiguity" height="50" min="0" direction="Horizontal" default="0.1" variable="outgroupAmbiguity"></slider>
+    <switch x="465" y="130" height="40" on="false" variable="uniform-initial-opinion" width="175" display="uniform-initial-opinion"></switch>
+    <button x="95" y="10" height="65" disableUntilTicks="true" forever="true" kind="Observer" width="63">go</button>
+    <button x="95" y="80" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="65" display="go once">go</button>
+    <plot x="465" autoPlotX="true" yMax="1.0" autoPlotY="true" yAxis="opinion" y="320" xMin="0.0" height="192" legend="true" xMax="1.0" yMin="0.0" width="305" xAxis="time" display="mean opinion within each group">
       <setup></setup>
       <update></update>
       <pen interval="1.0" mode="0" display="left" color="-955883" legend="true">
         <setup></setup>
-        <update>plot mean [myOpinion] of turtles with [myIdentity = "left"]</update>
+        <update>plot mean-opinion-left</update>
       </pen>
       <pen interval="1.0" mode="0" display="right" color="-13791810" legend="true">
         <setup></setup>
-        <update>plot mean [myOpinion] of turtles with [myIdentity = "right"]</update>
+        <update>plot mean-opinion-right</update>
       </pen>
     </plot>
-    <plot x="780" autoPlotX="true" yMax="0.5" autoPlotY="true" yAxis="varaince" y="320" xMin="0.0" height="190" legend="false" xMax="1.0" yMin="0.0" width="340" xAxis="ticks" display="Variance">
+    <plot x="775" autoPlotX="true" yMax="0.5" autoPlotY="true" y="320" xMin="0.0" height="190" legend="false" xMax="1.0" yMin="0.0" width="305" xAxis="time" display="diversity overall (black) and within-group (colors)">
       <setup></setup>
       <update></update>
       <pen interval="1.0" mode="0" display="default" color="-16777216" legend="true">
         <setup></setup>
-        <update>plot standard-deviation [myOpinion] of turtles</update>
+        <update>plot diversity</update>
       </pen>
       <pen interval="1.0" mode="0" display="pen-1" color="-955883" legend="true">
         <setup></setup>
-        <update>plot standard-deviation [myOpinion] of turtles with [myIdentity = "left"]</update>
+        <update>plot diversity-left</update>
       </pen>
       <pen interval="1.0" mode="0" display="pen-2" color="-13791810" legend="true">
         <setup></setup>
-        <update>plot standard-deviation [myOpinion] of turtles with [myIdentity = "right"]</update>
+        <update>plot diversity-right</update>
       </pen>
     </plot>
-    <plot x="1135" autoPlotX="false" yMax="50.0" autoPlotY="false" yAxis="frequency" y="195" xMin="-0.02" height="175" legend="false" xMax="1.02" yMin="0.0" width="445" xAxis="opinion" display="histogram-identity">
+    <monitor x="975" precision="2" y="515" height="60" fontSize="11" width="105" display="within-group diversity">0.5 * ((standard-deviation [myOpinion] of turtles with [ myIdentity = "left" ]) +  (standard-deviation [myOpinion] of turtles with [ myIdentity = "right" ]))</monitor>
+    <note x="645" y="130" backgroundDark="0" fontSize="10" width="270" markdown="false" height="46" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">If True, opinions are drawn from [0,1]
+If False, opinions of left turtles drawn from [0,0.5], 
+             right turtles from [0.5,1]</note>
+    <plot x="1085" autoPlotX="false" yMax="100.0" autoPlotY="false" yAxis="frequency" y="320" xMin="-0.01" height="215" legend="false" xMax="1.01" yMin="0.0" width="215" xAxis="opinion" display="distribution of opinions">
+      <setup>set-histogram-num-bars 10
+set-plot-y-range 0 count turtles
+set-plot-x-range (opinion-min - 0.02) (opinion-max + 0.02)</setup>
+      <update></update>
+      <pen interval="0.2" mode="1" display="default" color="-16777216" legend="false">
+        <setup></setup>
+        <update>histogram [myOpinion] of turtles</update>
+      </pen>
+    </plot>
+    <switch x="165" y="10" height="45" on="true" variable="randomize-seed" width="125" display="randomize-seed"></switch>
+    <input x="165" multiline="false" y="60" height="60" variable="seed" type="number" width="125">0.0</input>
+    <button x="10" y="10" height="110" disableUntilTicks="false" forever="false" kind="Observer" width="80">setup</button>
+    <monitor x="10" precision="0" y="635" height="60" fontSize="11" width="115" display="# out-group links">count-out-group-links</monitor>
+    <monitor x="10" precision="17" y="700" height="60" fontSize="11" width="115" display="# links">count-total-links</monitor>
+    <plot x="130" autoPlotX="true" yMax="0.1" autoPlotY="true" y="635" xMin="0.0" height="125" legend="false" xMax="100.0" yMin="0.0" width="330" xAxis="time" display="dyadic opinion distance">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="default" color="-16777216" legend="true">
+        <setup></setup>
+        <update>plot dyadic-opinion-distance</update>
+      </pen>
+    </plot>
+    <plot x="465" autoPlotX="true" yMax="0.01" autoPlotY="true" y="580" xMin="0.0" height="180" legend="false" xMax="10.0" yMin="0.0" width="305" xAxis="time" display="ER polarization">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="default" color="-16777216" legend="true">
+        <setup></setup>
+        <update>plot polarization</update>
+      </pen>
+    </plot>
+    <plot x="775" autoPlotX="true" yMax="0.1" autoPlotY="true" y="580" xMin="0.0" height="180" legend="false" xMax="10.0" yMin="0.0" width="305" xAxis="time" display="extremeness">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="default" color="-16777216" legend="true">
+        <setup></setup>
+        <update>plot extremeness</update>
+      </pen>
+    </plot>
+    <plot x="1085" autoPlotX="false" yMax="50.0" autoPlotY="false" yAxis="frequency" y="540" xMin="-0.02" height="220" legend="false" xMax="1.02" yMin="0.0" width="215" xAxis="opinion" display="distribution of opinions by group">
       <setup>set-histogram-num-bars 10  
 set-plot-y-range 0 (count turtles / 2)
 set-plot-x-range (opinion-min - 0.02) (opinion-max + 0.02)</setup>
@@ -398,71 +484,113 @@ set-plot-x-range (opinion-min - 0.02) (opinion-max + 0.02)</setup>
         <update>histogram [myOpinion] of turtles with [myIdentity = "right"]</update>
       </pen>
     </plot>
-    <monitor x="485" precision="2" y="515" height="60" fontSize="11" width="100" display="mean">mean [myOpinion] of turtles</monitor>
-    <monitor x="920" precision="2" y="515" height="60" fontSize="11" width="100" display="diversity">standard-deviation [myOpinion] of turtles</monitor>
-    <monitor x="1025" precision="2" y="515" height="60" fontSize="11" width="100" display="within-group diversity">0.5 * ((standard-deviation [myOpinion] of turtles with [ myIdentity = "left" ]) +  (standard-deviation [myOpinion] of turtles with [ myIdentity = "right" ]))</monitor>
-    <monitor x="595" precision="2" y="515" height="60" fontSize="11" width="100" display="extremeness">mean [abs ( myOpinion - opinion-mid ) ] of turtles</monitor>
-    <monitor x="700" precision="2" y="515" height="60" fontSize="11" width="170" display="polarisation (Pol0 Esteban-Ray)">abs ( (mean [myOpinion] of turtles with [myIdentity = "left"]) - (mean [myOpinion] of turtles with [myIdentity = "right"]))</monitor>
-    <slider x="670" step="0.01" y="135" max="1" width="180" display="outgroupAmbiguity" height="50" min="0" direction="Horizontal" default="0.1" variable="outgroupAmbiguity"></slider>
-    <slider x="490" step="0.001" y="260" max="1" width="175" display="homophily" height="50" min="0" direction="Horizontal" default="0.95" variable="homophily"></slider>
-    <slider x="485" step="0.01" y="135" max="1" width="175" display="ingroupAmbiguity" height="50" min="0" direction="Horizontal" default="0.1" variable="ingroupAmbiguity"></slider>
-    <slider x="485" step="0.01" y="195" max="1" width="175" display="confidenceBound" height="50" min="0" direction="Horizontal" default="0.2" variable="confidenceBound"></slider>
-    <note x="705" y="65" backgroundDark="0" fontSize="10" width="400" markdown="false" height="46" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">If True, opinions are drawn from [0,1]
-If False, opinions of left turtles drawn from [0,0.5], 
-             right turtles from [0.5,1]</note>
-    <switch x="555" y="65" height="40" on="false" variable="uniform-initial-opinion" width="140" display="uniform-initial-opinion"></switch>
-    <note x="480" y="80" backgroundDark="0" fontSize="10" width="150" markdown="false" height="20" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Initialisation:</note>
-    <note x="480" y="115" backgroundDark="0" fontSize="10" width="150" markdown="false" height="21" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Parameters:</note>
-    <monitor x="35" precision="0" y="560" height="60" fontSize="11" width="105" display="# out-group links">count-out-group-links</monitor>
-    <monitor x="145" precision="17" y="560" height="60" fontSize="11" width="100" display="# links">count-total-links</monitor>
-    <plot x="1135" autoPlotX="false" yMax="100.0" autoPlotY="false" yAxis="frequency" y="15" xMin="-0.01" height="175" legend="false" xMax="1.01" yMin="0.0" width="440" xAxis="opinion" display="histogram all">
-      <setup>set-histogram-num-bars 10
-set-plot-y-range 0 count turtles
-set-plot-x-range (opinion-min - 0.02) (opinion-max + 0.02)</setup>
-      <update></update>
-      <pen interval="0.2" mode="1" display="default" color="-16777216" legend="false">
-        <setup></setup>
-        <update>histogram [myOpinion] of turtles</update>
-      </pen>
-    </plot>
-    <button x="50" y="40" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="67">setup</button>
-    <input x="255" multiline="false" y="25" height="60" variable="seed" type="number" width="100">0.0</input>
+    <note x="165" y="580" backgroundDark="0" fontSize="12" width="290" markdown="false" height="50" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">to speed up the visualisation, show a smaller share of the links</note>
+    <slider x="10" step="0.1" y="580" max="1" width="150" display="show-link-share" height="50" min="0" direction="Horizontal" default="0.1" variable="show-link-share"></slider>
+    <note x="465" y="40" backgroundDark="0" fontSize="14" width="150" markdown="false" height="31" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Initialization</note>
+    <note x="465" y="175" backgroundDark="0" fontSize="14" width="150" markdown="false" height="31" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Parameters</note>
+    <slider x="600" step="0.01" y="65" max="1" width="225" display="share-ingroup-connections" height="60" min="0" direction="Horizontal" default="1.0" variable="share-ingroup-connections"></slider>
+    <input x="465" multiline="false" y="65" height="60" variable="num-agents" type="number" width="130">100.0</input>
   </widgets>
-  <info>## WHAT IS IT?
+  <info><![CDATA[## WHAT IS IT?
 
-(a general understanding of what the model is trying to show or explain)
+This model explores how **ambiguity in communication** affects opinion dynamics in a society structured by **political identity groups**.  
+Agents hold private opinions and group identities and interact over a social network. When communicating, agents may express their opinions **ambiguously**, meaning that the message differs from their true opinion. The model investigates how this ambiguity—especially when differing between ingroup and outgroup communication—shapes outcomes such as **polarization**, **diversity**, and **group alignment**.
+
+The model extends the bounded confidence framework by adding **identity-based homophily** and **message ambiguity**, allowing for nuanced analyses of how people’s tendency to speak differently within and across groups influences large-scale opinion patterns.
 
 ## HOW IT WORKS
 
-(what rules the agents use to create the overall behavior of the model)
+Each agent has:  
+- a **private opinion** (a number between 0 and 1),  
+- a **group identity** (left or right), and  
+- a set of **network connections** that can be more or less homophilic.
+
+During each time step, a random link is selected for communication:  
+1. The **sender** transforms their private opinion into a **message** by adding random noise. The magnitude of this noise depends on whether the sender and receiver share the same identity:  
+   - within-group communication uses `ingroupAmbiguity`,  
+   - between-group communication uses `outgroupAmbiguity`.  
+2. The **receiver** updates their opinion if the received message lies within their **confidence bound** (`confidenceBound`) around their own opinion.
+
+Through repeated interactions, local convergence or divergence of opinions emerges, leading to population-level patterns such as polarization or consensus.
 
 ## HOW TO USE IT
 
-(how to use the model, including a description of each of the items in the Interface tab)
+Use the sliders and switches in the **Interface tab** to set model parameters before pressing **Setup** and **Go**.
+
+### Main parameters
+- **num-agents** – total number of agents in the model.  
+- **confidenceBound** – the maximum opinion distance for which influence is possible.  
+- **homophily** – degree to which agents preferentially connect with others of the same identity.  
+- **share-ingroup-connections** – probability that a new link connects two agents sharing the same identity.  
+- **ingroupAmbiguity** – noise magnitude added to the message in within-group communication.  
+- **outgroupAmbiguity** – noise magnitude added to the message in between-group communication.  
+
+To simulate uniform ambiguity, set `ingroupAmbiguity` equal to `outgroupAmbiguity`.
+
+### Outputs and plots
+- **Polarization (Esteban-Ray index)** – measures ideological separation between groups.  
+- **Extremeness** – average distance from the midpoint (0.5).  
+- **Diversity** – variance in private opinions (overall and by group).  
+- **Dyadic opinion distance** – average opinion distance across all network links.  
+- **Opinion distributions** – histograms of opinions for the full population and for each group.
 
 ## THINGS TO NOTICE
 
-(suggested things for the user to notice while running the model)
+- Observe how **ingroup alignment** strengthens as homophily increases, even when ambiguity levels remain constant.  
+- Watch how **outgroup ambiguity** dampens or delays polarization: ambiguous communication between groups can blur opinion differences.  
+- Notice how small changes in `confidenceBound` can shift the system from pluralism to near-consensus.  
+- Examine the distribution plots: sometimes groups converge internally while diverging externally.
 
 ## THINGS TO TRY
 
-(suggested things for the user to try to do (move sliders, switches, etc.) with the model)
+- Compare outcomes when `ingroupAmbiguity` = `outgroupAmbiguity` versus when they differ.  
+- Explore how increasing **homophily** alters the rate and degree of polarization.  
+- Test extreme cases:  
+  - No ambiguity (`ingroupAmbiguity` = `outgroupAmbiguity` = 0).  
+  - Highly ambiguous cross-group communication only (`outgroupAmbiguity` > `ingroupAmbiguity`).  
+- Experiment with smaller or larger `confidenceBound` values to see how tolerance interacts with message ambiguity.
 
 ## EXTENDING THE MODEL
 
-(suggested things to add or change in the Code tab to make the model more complicated, detailed, accurate, etc.)
+- Make `confidenceBound` depend on whether the interaction takes place **within or between** identity groups.  
+- Introduce **asymmetric group sizes** or **identity strength**.  
 
 ## NETLOGO FEATURES
 
-(interesting or unusual features of NetLogo that the model uses, particularly in the Code tab; or where workarounds were needed for missing features)
+### Visualization in the 'world'
+
+- **Turtle shape** indicates group membership
+- **Turtle color** indicates opinion
+- **Edge color** indicates whether the edge connects two turtles of the same identity group (colored blue or red) or of different identity groups (colored white)
+
+### Code features
+
+- Maslov-Sneppen rewiring
+
+### BehaviorSpace
+
+There are several computational experiments pre-programmed in BehaviorSpace. The experiments map onto the results described in the [chapter](https://doi.org/) (Steiglechner & Keijzer, 2026):
+
+- `single-run` produces a run with drift from ambiguity (Figure 2)
+- `ambiguity-and-confidence` varies `confidenceBound` and `ambiguity` to create the data for the main effects of ambiguity (Figure 3)
+- `unambiguous-homophily` creates data to show the main effect of homophily (Figure 4)
+- `single-runs-ambiguity-homophily` creates four single runs for the corner cases of homophily and ambiguity (Figure 5)
+- `ambiguity-and-homophily` is the simulation experiment that produces many replications for the corner cases of ambiguity and homophily (Figure 6)
+- `ambiguity-between-groups` is the simulation experiment where ingroup and outgroup ambiguity are not equal (Figure 7) 
 
 ## RELATED MODELS
 
-(models in the NetLogo Models Library and elsewhere which are of related interest)
+- Steiglechner, P., Keijzer, M. A., E. Smaldino, P., Moser, D., & Merico, A. (2024). [Noise and opinion dynamics: how ambiguity promotes pro-majority consensus in the presence of confirmation bias](https://doi.org/10.1098/rsos.231071). *Royal Society Open Science, 11*(4), 231071.
+- Deffuant, G., Neau, D., Amblard, F., & Weisbuch, G. (2000). [Mixing beliefs among interacting agents](https://doi.org/10.1142/S0219525900000078). *Advances in Complex Systems, 3*(01n04), 87-98.
 
 ## CREDITS AND REFERENCES
 
-(a reference to the model's URL on the web if it has one, as well as any other necessary credits, citations, and links)</info>
+This NetLogo model was created by [Peter Steiglechner]() and [Marijn Keijzer](https://marijnkeijzer.github.io/)
+
+It was developed for the book chapter:  
+
+Steiglechner, P. & Keijzer, M.A. (2026). [Opinion dynamics with ambiguous messages within and between identity groups](https://doi.org/). In Larson & Coen (Eds.), *Agent-Based Modeling for Research on Groups, Networks, and Organizations.* APA Publishing.
+]]></info>
   <turtleShapes>
     <shape name="default" rotatable="true" editableColorIndex="0">
       <polygon color="-1920102913" filled="true" marked="true">
@@ -1298,32 +1426,9 @@ set-plot-x-range (opinion-min - 0.02) (opinion-max + 0.02)</setup>
   </linkShapes>
   <previewCommands>setup repeat 75 [ go ]</previewCommands>
   <experiments>
-    <experiment name="drift-over-bias-and-noise" repetitions="1" sequentialRunOrder="false" runMetricsEveryStep="false" timeLimit="100000">
+    <experiment name="ambiguity-and-homophily" repetitions="20" sequentialRunOrder="false" runMetricsEveryStep="false" timeLimit="100000">
       <setup>setup</setup>
       <go>go</go>
-      <runMetricsCondition>( ticks mod 100000 ) = 0</runMetricsCondition>
-      <metrics>
-        <metric>final-opinions</metric>
-      </metrics>
-      <constants>
-        <steppedValueSet variable="ingroupAmbiguity" first="0" step="0.05" last="0.3"></steppedValueSet>
-        <enumeratedValueSet variable="outgroupAmbiguity">
-          <value value="-1"></value>
-        </enumeratedValueSet>
-        <steppedValueSet variable="confidenceBound" first="0.05" step="0.05" last="0.4"></steppedValueSet>
-        <enumeratedValueSet variable="uniform-initial-opinion">
-          <value value="true"></value>
-        </enumeratedValueSet>
-        <enumeratedValueSet variable="homophily">
-          <value value="0"></value>
-        </enumeratedValueSet>
-        <steppedValueSet variable="seed" first="0" step="1" last="99"></steppedValueSet>
-      </constants>
-    </experiment>
-    <experiment name="simulations for 2x2 (homophily x ambiguity)" repetitions="1" sequentialRunOrder="false" runMetricsEveryStep="false" timeLimit="100000">
-      <setup>setup</setup>
-      <go>go</go>
-      <runMetricsCondition>( ticks mod 20000 ) = 0</runMetricsCondition>
       <metrics>
         <metric>final-opinions</metric>
       </metrics>
@@ -1333,10 +1438,14 @@ set-plot-x-range (opinion-min - 0.02) (opinion-max + 0.02)</setup>
           <value value="0.1"></value>
         </enumeratedValueSet>
         <enumeratedValueSet variable="outgroupAmbiguity">
-          <value value="-1"></value>
+          <value value="0"></value>
+          <value value="0.1"></value>
         </enumeratedValueSet>
         <enumeratedValueSet variable="confidenceBound">
           <value value="0.2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="convergenceRate">
+          <value value="0.5"></value>
         </enumeratedValueSet>
         <enumeratedValueSet variable="uniform-initial-opinion">
           <value value="false"></value>
@@ -1345,42 +1454,26 @@ set-plot-x-range (opinion-min - 0.02) (opinion-max + 0.02)</setup>
           <value value="0"></value>
           <value value="0.95"></value>
         </enumeratedValueSet>
-        <steppedValueSet variable="seed" first="0" step="1" last="99"></steppedValueSet>
       </constants>
     </experiment>
-    <experiment name="singleRun without homophily" repetitions="1" sequentialRunOrder="false" runMetricsEveryStep="false" timeLimit="100000">
+    <experiment name="single-runs-ambiguity-homophily" repetitions="1" sequentialRunOrder="false" runMetricsEveryStep="false" timeLimit="100000">
       <setup>setup</setup>
       <go>go</go>
       <runMetricsCondition>( ticks mod 1000 ) = 0</runMetricsCondition>
       <metrics>
-        <metric>final-opinions</metric>
-      </metrics>
-      <constants>
-        <enumeratedValueSet variable="ingroupAmbiguity">
-          <value value="0.1"></value>
-        </enumeratedValueSet>
-        <enumeratedValueSet variable="outgroupAmbiguity">
-          <value value="-1"></value>
-        </enumeratedValueSet>
-        <enumeratedValueSet variable="confidenceBound">
-          <value value="0.2"></value>
-        </enumeratedValueSet>
-        <enumeratedValueSet variable="uniform-initial-opinion">
-          <value value="true"></value>
-        </enumeratedValueSet>
-        <enumeratedValueSet variable="homophily">
-          <value value="0"></value>
-        </enumeratedValueSet>
-        <enumeratedValueSet variable="seed">
-          <value value="13"></value>
-        </enumeratedValueSet>
-      </constants>
-    </experiment>
-    <experiment name="singleRuns 2x2 (homophily x ambiguity)" repetitions="1" sequentialRunOrder="false" runMetricsEveryStep="false" timeLimit="100000">
-      <setup>setup</setup>
-      <go>go</go>
-      <runMetricsCondition>( ticks mod 1000 ) = 0</runMetricsCondition>
-      <metrics>
+        <metric>diversity</metric>
+        <metric>mean-opinion</metric>
+        <metric>extremeness</metric>
+        <metric>diversity-right</metric>
+        <metric>diversity-left</metric>
+        <metric>mean-opinion-right</metric>
+        <metric>mean-opinion-left</metric>
+        <metric>extremeness-right</metric>
+        <metric>extremeness-left</metric>
+        <metric><![CDATA[count turtles with [(myIdentity = "left") and (myOpinion > 0.5)]]]></metric>
+        <metric><![CDATA[count turtles with [(myIdentity = "left") and (myOpinion < 0.5)]]]></metric>
+        <metric><![CDATA[count turtles with [(myIdentity = "right") and (myOpinion > 0.5)]]]></metric>
+        <metric><![CDATA[count turtles with [(myIdentity = "right") and (myOpinion < 0.5)]]]></metric>
         <metric>final-opinions</metric>
       </metrics>
       <constants>
@@ -1393,6 +1486,9 @@ set-plot-x-range (opinion-min - 0.02) (opinion-max + 0.02)</setup>
         </enumeratedValueSet>
         <enumeratedValueSet variable="confidenceBound">
           <value value="0.2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="convergenceRate">
+          <value value="0.5"></value>
         </enumeratedValueSet>
         <enumeratedValueSet variable="uniform-initial-opinion">
           <value value="false"></value>
@@ -1406,50 +1502,72 @@ set-plot-x-range (opinion-min - 0.02) (opinion-max + 0.02)</setup>
         </enumeratedValueSet>
       </constants>
     </experiment>
-    <experiment name="simulations for 2x2 (ingroup ambiguity x outgroup ambiguity)" repetitions="1" sequentialRunOrder="false" runMetricsEveryStep="false" timeLimit="100000">
+    <experiment name="unambiguous-homophily" repetitions="100" sequentialRunOrder="false" runMetricsEveryStep="false" timeLimit="100000">
       <setup>setup</setup>
       <go>go</go>
-      <runMetricsCondition>( ticks mod 100000 ) = 0</runMetricsCondition>
       <metrics>
+        <metric>diversity</metric>
+        <metric>mean-opinion</metric>
+        <metric>extremeness</metric>
+        <metric>diversity-right</metric>
+        <metric>diversity-left</metric>
+        <metric>mean-opinion-right</metric>
+        <metric>mean-opinion-left</metric>
+        <metric>extremeness-right</metric>
+        <metric>extremeness-left</metric>
+        <metric><![CDATA[count turtles with [(myIdentity = "left") and (myOpinion > 0.5)]]]></metric>
+        <metric><![CDATA[count turtles with [(myIdentity = "left") and (myOpinion < 0.5)]]]></metric>
+        <metric><![CDATA[count turtles with [(myIdentity = "right") and (myOpinion > 0.5)]]]></metric>
+        <metric><![CDATA[count turtles with [(myIdentity = "right") and (myOpinion < 0.5)]]]></metric>
         <metric>final-opinions</metric>
+        <metric>dyadic-opinion-distance</metric>
       </metrics>
       <constants>
-        <enumeratedValueSet variable="ingroupAmbiguity">
-          <value value="0"></value>
-          <value value="0.1"></value>
-        </enumeratedValueSet>
-        <enumeratedValueSet variable="outgroupAmbiguity">
-          <value value="0"></value>
-          <value value="0.1"></value>
-        </enumeratedValueSet>
-        <enumeratedValueSet variable="confidenceBound">
-          <value value="0.2"></value>
-        </enumeratedValueSet>
         <enumeratedValueSet variable="uniform-initial-opinion">
           <value value="false"></value>
         </enumeratedValueSet>
-        <enumeratedValueSet variable="homophily">
-          <value value="0.95"></value>
-        </enumeratedValueSet>
-        <steppedValueSet variable="seed" first="0" step="1" last="99"></steppedValueSet>
-      </constants>
-    </experiment>
-    <experiment name="SensitivityAnalysis_driftOverTime" repetitions="1" sequentialRunOrder="false" runMetricsEveryStep="false" timeLimit="200000">
-      <setup>setup</setup>
-      <go>go</go>
-      <runMetricsCondition>( ticks mod 10000 ) = 0</runMetricsCondition>
-      <metrics>
-        <metric>final-opinions</metric>
-      </metrics>
-      <constants>
         <enumeratedValueSet variable="ingroupAmbiguity">
-          <value value="0.1"></value>
+          <value value="0"></value>
         </enumeratedValueSet>
         <enumeratedValueSet variable="outgroupAmbiguity">
-          <value value="0.1"></value>
+          <value value="0"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="seed">
+          <value value="-1"></value>
         </enumeratedValueSet>
         <enumeratedValueSet variable="confidenceBound">
           <value value="0.2"></value>
+        </enumeratedValueSet>
+        <steppedValueSet variable="homophily" first="0" step="0.1" last="1"></steppedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="ambiguity-and-confidence" repetitions="100" sequentialRunOrder="false" runMetricsEveryStep="false" timeLimit="100000">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>diversity</metric>
+        <metric>mean-opinion</metric>
+        <metric>extremeness</metric>
+        <metric>diversity-right</metric>
+        <metric>diversity-left</metric>
+        <metric>mean-opinion-right</metric>
+        <metric>mean-opinion-left</metric>
+        <metric>extremeness-right</metric>
+        <metric>extremeness-left</metric>
+        <metric><![CDATA[count turtles with [(myIdentity = "left") and (myOpinion > 0.5)]]]></metric>
+        <metric><![CDATA[count turtles with [(myIdentity = "left") and (myOpinion < 0.5)]]]></metric>
+        <metric><![CDATA[count turtles with [(myIdentity = "right") and (myOpinion > 0.5)]]]></metric>
+        <metric><![CDATA[count turtles with [(myIdentity = "right") and (myOpinion < 0.5)]]]></metric>
+        <metric>final-opinions</metric>
+      </metrics>
+      <constants>
+        <steppedValueSet variable="ingroupAmbiguity" first="0" step="0.05" last="0.3"></steppedValueSet>
+        <enumeratedValueSet variable="outgroupAmbiguity">
+          <value value="-1"></value>
+        </enumeratedValueSet>
+        <steppedValueSet variable="confidenceBound" first="0.05" step="0.05" last="0.4"></steppedValueSet>
+        <enumeratedValueSet variable="convergenceRate">
+          <value value="0.5"></value>
         </enumeratedValueSet>
         <enumeratedValueSet variable="uniform-initial-opinion">
           <value value="true"></value>
@@ -1457,7 +1575,79 @@ set-plot-x-range (opinion-min - 0.02) (opinion-max + 0.02)</setup>
         <enumeratedValueSet variable="homophily">
           <value value="0"></value>
         </enumeratedValueSet>
-        <steppedValueSet variable="seed" first="0" step="1" last="99"></steppedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="single-run" repetitions="1" sequentialRunOrder="false" runMetricsEveryStep="false" timeLimit="100000">
+      <setup>setup</setup>
+      <go>go</go>
+      <runMetricsCondition>( ticks mod 1000 ) = 0</runMetricsCondition>
+      <metrics>
+        <metric>diversity</metric>
+        <metric>mean-opinion</metric>
+        <metric>extremeness</metric>
+        <metric>diversity-right</metric>
+        <metric>diversity-left</metric>
+        <metric>mean-opinion-right</metric>
+        <metric>mean-opinion-left</metric>
+        <metric>extremeness-right</metric>
+        <metric>extremeness-left</metric>
+        <metric><![CDATA[count turtles with [(myIdentity = "left") and (myOpinion > 0.5)]]]></metric>
+        <metric><![CDATA[count turtles with [(myIdentity = "left") and (myOpinion < 0.5)]]]></metric>
+        <metric><![CDATA[count turtles with [(myIdentity = "right") and (myOpinion > 0.5)]]]></metric>
+        <metric><![CDATA[count turtles with [(myIdentity = "right") and (myOpinion < 0.5)]]]></metric>
+        <metric>final-opinions</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="ingroupAmbiguity">
+          <value value="0.1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="outgroupAmbiguity">
+          <value value="0.1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="confidenceBound">
+          <value value="0.2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="convergenceRate">
+          <value value="0.5"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="uniform-initial-opinion">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="homophily">
+          <value value="0"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="seed">
+          <value value="13"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="ambiguity-between-groups" repetitions="100" sequentialRunOrder="false" runMetricsEveryStep="false" timeLimit="100000">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>final-opinions</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="ingroupAmbiguity">
+          <value value="0"></value>
+          <value value="0.1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="outgroupAmbiguity">
+          <value value="0"></value>
+          <value value="0.1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="confidenceBound">
+          <value value="0.2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="convergenceRate">
+          <value value="0.5"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="uniform-initial-opinion">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="homophily">
+          <value value="0.95"></value>
+        </enumeratedValueSet>
       </constants>
     </experiment>
   </experiments>
